@@ -9,6 +9,7 @@ import { renderRedirect } from "./templates/redirect.js";
 import { renderRandom } from "./templates/random.js";
 import { render404 } from "./templates/404.js";
 import { renderDefaultMemberBadgeSvg, renderHubBadgeSvg } from "./badges.js";
+import { validateRing } from "./validate.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DIST = path.join(ROOT, "dist");
@@ -94,6 +95,17 @@ async function build(): Promise<void> {
 
   const ring = await loadRing();
   const deadTags = await loadDeadTags();
+
+  // Defense in depth: build.ts constructs filesystem paths directly from
+  // member.slug/member.badge (dist/{slug}/next/, dist/badges/{slug}.png).
+  // That's only safe when ring.json is already schema-valid — don't take
+  // that on faith even though `npm run validate` normally runs first.
+  const issues = await validateRing(ring);
+  if (issues.length > 0) {
+    console.error(`Refusing to build: ring.json failed validation (${issues.length} issue(s)):`);
+    for (const issue of issues) console.error(`  - ${issue.message}`);
+    process.exit(1);
+  }
 
   const badgeSrc = await writeBadges(ring);
   const badgeSrcFor = (member: Member) => badgeSrc.get(member.slug) ?? "/badges/dhts.png";

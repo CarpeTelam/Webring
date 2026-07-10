@@ -1,4 +1,4 @@
-import { escapeHtml } from "../escape.js";
+import { escapeHtml, jsonForScript } from "../escape.js";
 import type { Ring } from "../types.js";
 import { renderLayout } from "./layout.js";
 
@@ -8,9 +8,9 @@ import { renderLayout } from "./layout.js";
  * as a redirect target, so there is no open-redirect surface.
  */
 export function renderRandom(ring: Ring): string {
-  const memberData = JSON.stringify(
+  const memberData = jsonForScript(
     ring.members.map((m) => ({ slug: m.slug, url: m.url, name: m.name })),
-  ).replace(/</g, "\\u003c");
+  );
 
   const list = ring.members
     .map((m) => `<li><a href="${escapeHtml(m.url)}">${escapeHtml(m.name)}</a></li>`)

@@ -116,3 +116,33 @@ then, the changed-file allowlist + `pull_request`-only trigger + branch
 protection remain the load-bearing controls from §9.1 — SHA-pinning is
 defense-in-depth on top of those, not the only thing standing between a
 malicious PR and the runner.
+
+**D16. Hardening pass from an adversarial review: SSRF guard on member-URL
+fetches, dead-link-issue pagination, future-`joined` rejection, inline-JS
+escaping extended to U+2028/U+2029, charset tightened against control and
+bidi-override characters, `build.ts` re-validates before writing, and the
+allowlist-skip gate keys off the two named maintainers instead of
+`author_association`.**
+*Why:* An adversarial review (assuming bugs existed rather than confirming
+none did) found that `checkSitesReachable`/`warnMissingBacklinks`/the
+link-checker followed redirects on attacker-controlled `url` values with
+no check against private/link-local/CGNAT ranges — a stranger's PR could
+point a member `url` at a public host that 302s to `169.254.169.254` or
+an internal address, and CI would follow it. Fixed with `src/safe-fetch.ts`:
+manual redirect handling, a DNS-resolved IP blocklist re-checked at every
+hop, a redirect cap, and a response-size cap. Also found and fixed: the
+weekly link-checker's issue lookup fetched only page 1 of `dead-link`
+issues (open+closed), so past 100 ever-opened issues it would silently
+start duplicating/failing to auto-close; a `joined` date with no
+past-only constraint let a member set `"2099-01-01"` and never be checked
+by the weekly link-checker at all; `JSON.stringify` in `/random/`'s inline
+script didn't escape U+2028/U+2029 (harmless on ES2019+ engines, escaped
+anyway for older ones) alongside the existing `<`/`>`/`&` script-breakout
+escaping; the charset regex allowed control characters and Unicode bidi
+overrides (e.g. U+202E) that don't trip HTML escaping but can visually
+spoof a member's displayed name; `build.ts` trusted `ring.json` was
+already schema-valid rather than re-checking, which is only true because
+of workflow step ordering, not anything enforced in code; and the
+changed-file allowlist skip condition matched GitHub's `author_association`
+(MEMBER/COLLABORATOR) rather than the specific two names in
+`.github/CODEOWNERS`, which is a looser bar than "maintainer."

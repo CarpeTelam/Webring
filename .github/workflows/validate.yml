@@ -18,11 +18,15 @@ jobs:
   # First job: does this PR (from a non-maintainer) touch anything outside
   # the data-only allowlist? Runs before anything else, and before any
   # dependency install.
+  #
+  # Gated on the two names in .github/CODEOWNERS, not author_association —
+  # association values like MEMBER/COLLABORATOR describe repo access level,
+  # not maintainer status, so a collaborator who isn't a CODEOWNER would
+  # otherwise skip this gate too. Keep this list in sync with CODEOWNERS.
   changed-files-allowlist:
     if: >-
-      github.event.pull_request.author_association != 'OWNER' &&
-      github.event.pull_request.author_association != 'MEMBER' &&
-      github.event.pull_request.author_association != 'COLLABORATOR'
+      github.event.pull_request.user.login != 'technicalpickles' &&
+      github.event.pull_request.user.login != 'noizwaves'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,7 +39,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4 # v4.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - name: Install dependencies
         run: npm ci
@@ -88,7 +92,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4 # v4.1.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install dependencies

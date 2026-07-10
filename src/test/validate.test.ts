@@ -81,4 +81,48 @@ describe("validateRing", () => {
     const issues = await validateRing(ring as unknown as Ring);
     expect(issues.length).toBeGreaterThan(0);
   });
+
+  it("rejects a future joined date (would permanently exempt the member from the link checker)", async () => {
+    const ring = baseRing();
+    ring.members[0]!.joined = "2099-01-01";
+    const issues = await validateRing(ring);
+    expect(issues.some((i) => i.message.includes("is in the future"))).toBe(true);
+  });
+
+  it("accepts a joined date of today", async () => {
+    const ring = baseRing();
+    const today = new Date().toISOString().slice(0, 10);
+    ring.members[0]!.joined = today;
+    const issues = await validateRing(ring);
+    expect(issues).toEqual([]);
+  });
+
+  it("rejects control characters (e.g. a tab or NUL) in name/owner", async () => {
+    const tab = String.fromCharCode(0x09);
+    const nul = String.fromCharCode(0x00);
+
+    const withTab = baseRing();
+    withTab.members[0]!.name = `pickles${tab}dev`;
+    expect((await validateRing(withTab)).length).toBeGreaterThan(0);
+
+    const withNul = baseRing();
+    withNul.members[0]!.owner = `technical${nul}pickles`;
+    expect((await validateRing(withNul)).length).toBeGreaterThan(0);
+  });
+
+  it("rejects a bidi right-to-left override in name (visual spoofing)", async () => {
+    const rlo = String.fromCharCode(0x202e);
+    const ring = baseRing();
+    ring.members[0]!.name = `evil${rlo}reversed`;
+    const issues = await validateRing(ring);
+    expect(issues.length).toBeGreaterThan(0);
+  });
+
+  it("still accepts legitimate accented / non-Latin names", async () => {
+    const ring = baseRing();
+    ring.members[0]!.name = "José García";
+    ring.members[1]!.owner = "田中";
+    const issues = await validateRing(ring);
+    expect(issues).toEqual([]);
+  });
 });

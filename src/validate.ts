@@ -5,6 +5,7 @@ import Ajv from "ajv";
 import addFormats from "ajv-formats";
 import sharp from "sharp";
 import type { Ring } from "./types.js";
+import { safeFetchText } from "./safe-fetch.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 
@@ -12,7 +13,23 @@ export interface ValidationIssue {
   message: string;
 }
 
-const CHARSET_RE = /^[^<>&"']*$/;
+function charRange(startCode: number, endCode: number): string {
+  return `${String.fromCharCode(startCode)}-${String.fromCharCode(endCode)}`;
+}
+
+// Printable text only: blocks the five HTML metacharacters, C0/C1 control
+// characters (incl. newlines/tabs/NUL), and Unicode bidi formatting
+// characters (incl. U+202E RIGHT-TO-LEFT OVERRIDE) that can visually spoof
+// a member's displayed name/owner without tripping any HTML escaping.
+const BLOCKED_CHARS =
+  charRange(0x00, 0x1f) + // C0 controls
+  charRange(0x7f, 0x9f) + // DEL + C1 controls
+  String.fromCharCode(0x200e) + // LRM
+  String.fromCharCode(0x200f) + // RLM
+  charRange(0x202a, 0x202e) + // LRE RLE PDF LRO RLO
+  charRange(0x2066, 0x2069); // LRI RLI FSI PDI
+
+const CHARSET_RE = new RegExp(`^[^<>&"'${BLOCKED_CHARS}]*$`);
 const MAX_BADGE_BYTES = 100 * 1024;
 const BADGE_WIDTH = 88;
 const BADGE_HEIGHT = 31;
@@ -73,16 +90,26 @@ export async function validateRing(ring: Ring): Promise<ValidationIssue[]> {
     }
 
     if (!CHARSET_RE.test(member.name)) {
-      issues.push({ message: `${member.slug}: name contains disallowed characters (<>&"')` });
+      issues.push({ message: `${member.slug}: name contains disallowed characters (HTML metacharacters, control characters, or bidi-override characters)` });
     }
     if (!CHARSET_RE.test(member.owner)) {
-      issues.push({ message: `${member.slug}: owner contains disallowed characters (<>&"')` });
+      issues.push({ message: `${member.slug}: owner contains disallowed characters (HTML metacharacters, control characters, or bidi-override characters)` });
     }
     if (!member.url.startsWith("https://")) {
       issues.push({ message: `${member.slug}: url must be https://` });
     }
     if (member.rss && !member.rss.startsWith("https://")) {
       issues.push({ message: `${member.slug}: rss must be https://` });
+    }
+
+    // A future joined date makes daysSince() negative forever in check-links.ts,
+    // permanently exempting the member from the weekly dead-link checker's
+    // 7-day grace period instead of just covering it temporarily.
+    const joinedMs = Date.parse(`${member.joined}T00:00:00Z`);
+    if (Number.isNaN(joinedMs)) {
+      issues.push({ message: `${member.slug}: joined "${member.joined}" is not a valid date` });
+    } else if (joinedMs > Date.now()) {
+      issues.push({ message: `${member.slug}: joined "${member.joined}" is in the future` });
     }
 
     if (member.badge) {
@@ -102,7 +129,7 @@ export async function validateRing(ring: Ring): Promise<ValidationIssue[]> {
   }
 
   if (!CHARSET_RE.test(ring.name)) {
-    issues.push({ message: `ring name contains disallowed characters (<>&"')` });
+    issues.push({ message: `ring name contains disallowed characters (HTML metacharacters, control characters, or bidi-override characters)` });
   }
 
   return issues;
@@ -143,10 +170,7 @@ export async function checkSitesReachable(ring: Ring): Promise<ValidationIssue[]
   await Promise.all(
     ring.members.map(async (member) => {
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10_000);
-        const res = await fetch(member.url, { signal: controller.signal, redirect: "follow" });
-        clearTimeout(timeout);
+        const res = await safeFetchText(member.url);
         if (!res.ok) {
           issues.push({ message: `${member.slug}: ${member.url} returned HTTP ${res.status}` });
         }
@@ -171,10 +195,9 @@ export async function warnMissingBacklinks(ring: Ring): Promise<string[]> {
   await Promise.all(
     ring.members.map(async (member) => {
       try {
-        const res = await fetch(member.url, { redirect: "follow" });
+        const res = await safeFetchText(member.url);
         if (!res.ok) return;
-        const html = await res.text();
-        if (!html.includes(ringHost)) {
+        if (!res.text.includes(ringHost)) {
           warnings.push(`${member.slug}: homepage does not yet link back to ${ringHost}`);
         }
       } catch {

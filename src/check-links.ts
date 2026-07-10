@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Ring, Member } from "./types.js";
+import { safeFetchText } from "./safe-fetch.js";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const GRACE_PERIOD_DAYS = 7;
@@ -46,14 +47,32 @@ function issueTitle(slug: string): string {
   return `Dead link: ${slug}`;
 }
 
-async function findIssue(slug: string): Promise<GitHubIssue | null> {
-  const res = await ghFetch(`/issues?labels=${LABEL}&state=all&per_page=100`);
-  const issues = (await res.json()) as GitHubIssue[];
+const MAX_ISSUE_PAGES = 50; // 50 * 100 = 5,000 dead-link issues, ever — a hard backstop, not an expected ceiling
+
+/**
+ * Lists every open+closed `dead-link` issue, paginated. Without this, a
+ * ring that has ever accumulated more than one page of dead-link issues
+ * (open or closed — closed issues keep the label forever) would silently
+ * stop finding existing issues past page 1: openOrUpdateIssue would open
+ * duplicates, and closeIssueIfOpen would never find the issue to close.
+ */
+export async function listDeadLinkIssues(): Promise<GitHubIssue[]> {
+  const all: GitHubIssue[] = [];
+  for (let page = 1; page <= MAX_ISSUE_PAGES; page++) {
+    const res = await ghFetch(`/issues?labels=${LABEL}&state=all&per_page=100&page=${page}`);
+    const issues = (await res.json()) as GitHubIssue[];
+    all.push(...issues);
+    if (issues.length < 100) break;
+  }
+  return all;
+}
+
+function findIssue(issues: GitHubIssue[], slug: string): GitHubIssue | null {
   return issues.find((i) => i.title === issueTitle(slug)) ?? null;
 }
 
-async function openOrUpdateIssue(member: Member, reason: string): Promise<void> {
-  const existing = await findIssue(member.slug);
+async function openOrUpdateIssue(member: Member, reason: string, issues: GitHubIssue[]): Promise<void> {
+  const existing = findIssue(issues, member.slug);
   const body = `The link checker could not confirm \`${member.url}\` is healthy.\n\nReason: ${reason}\n\nThis is an automated report from the weekly dead-link checker. Removal from the ring is a human decision — see JOINING.md.`;
 
   if (existing && existing.state === "open") {
@@ -86,8 +105,8 @@ async function openOrUpdateIssue(member: Member, reason: string): Promise<void> 
   console.log(`Opened issue #${created.number} for ${member.slug}`);
 }
 
-async function closeIssueIfOpen(member: Member): Promise<void> {
-  const existing = await findIssue(member.slug);
+async function closeIssueIfOpen(member: Member, issues: GitHubIssue[]): Promise<void> {
+  const existing = findIssue(issues, member.slug);
   if (!existing || existing.state !== "open") return;
 
   await ghFetch(`/issues/${existing.number}/comments`, {
@@ -108,15 +127,11 @@ function daysSince(dateStr: string): number {
   return (Date.now() - then) / (1000 * 60 * 60 * 24);
 }
 
-async function fetchWithRetry(url: string): Promise<Response> {
+async function fetchWithRetry(url: string): Promise<{ status: number; ok: boolean; text: string }> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
-      const res = await fetch(url, { redirect: "follow", signal: controller.signal });
-      clearTimeout(timeout);
-      return res;
+      return await safeFetchText(url, 15_000);
     } catch (err) {
       lastErr = err;
       if (attempt < RETRY_COUNT) {
@@ -133,8 +148,7 @@ export async function checkMember(member: Member, ringHost: string): Promise<{ o
     if (!res.ok) {
       return { ok: false, reason: `HTTP ${res.status}` };
     }
-    const html = await res.text();
-    if (!html.includes(ringHost)) {
+    if (!res.text.includes(ringHost)) {
       return { ok: false, reason: `page does not link back to ${ringHost}` };
     }
     return { ok: true, reason: "" };
@@ -148,6 +162,7 @@ async function main(): Promise<void> {
   const ring: Ring = JSON.parse(raw);
   const ringHost = new URL(ring.url).host;
 
+  const issues = await listDeadLinkIssues();
   let failures = 0;
 
   for (const member of ring.members) {
@@ -159,10 +174,10 @@ async function main(): Promise<void> {
     const result = await checkMember(member, ringHost);
     if (result.ok) {
       console.log(`${member.slug}: ok`);
-      await closeIssueIfOpen(member);
+      await closeIssueIfOpen(member, issues);
     } else {
       console.log(`${member.slug}: FAILED (${result.reason})`);
-      await openOrUpdateIssue(member, result.reason);
+      await openOrUpdateIssue(member, result.reason, issues);
       failures++;
     }
   }

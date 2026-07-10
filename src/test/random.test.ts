@@ -49,4 +49,16 @@ describe("renderRandom", () => {
     const html = renderRandom(evil);
     expect(html).not.toContain("</script><script>alert(1)</script>");
   });
+
+  it("escapes U+2028/U+2029 within the inline <script> block (harmless elsewhere, e.g. the noscript text list)", () => {
+    const lineSep = String.fromCharCode(0x2028);
+    const weird: Ring = {
+      ...ring,
+      members: [{ ...ring.members[0]!, name: `pickles${lineSep}dev` }],
+    };
+    const html = renderRandom(weird);
+    const scriptBlock = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+    expect(scriptBlock).not.toContain(lineSep);
+    expect(scriptBlock).toContain("\\u2028");
+  });
 });
